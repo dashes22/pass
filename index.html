@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <title>Вход · Регистрация</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="card">
+        <h2>Аккаунт</h2>
+        <form id="authForm">
+            <div class="field">
+                <label for="loginInput">Логин</label>
+                <input 
+                    type="text" 
+                    id="loginInput" 
+                    placeholder="введите логин" 
+                    autocomplete="username"
+                />
+            </div>    
+            <div class="field">
+                <label for="passwordInput">Пароль</label>
+                <input 
+                    type="password" 
+                    id="passwordInput" 
+                    placeholder="пароль" 
+                    autocomplete="current-password"
+                />
+                <div class="password-hint">
+                    минимум 8 символов, заглавная буква, строчная буква, цифра, специальный символ (!@#$%^&*)
+                </div>
+            </div>  
+            <div class="actions">
+                <button type="button" class="btn btn-secondary" id="registerBtn">
+                    Зарегистрироваться
+                </button>
+                <button type="button" class="btn btn-primary" id="loginBtn">
+                    Войти
+                </button>
+            </div>
+            <div id="statusMessage" class="status-msg"></div>
+        </form>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
