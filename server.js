@@ -1,11 +1,12 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const argon2 = require('argon2');
 const fs = require('fs');
+const crypto = require('crypto');
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static('.'));
 const db = new sqlite3.Database('C:/Users/karto/OneDrive/Рабочий стол/инфобез/pass.db', (err) => {
     if (err) {
@@ -15,11 +16,18 @@ const db = new sqlite3.Database('C:/Users/karto/OneDrive/Рабочий стол
         console.log('Подключено к pass.db');
     }
 });
+// Таблица пользователей
+// pepper — серверная соль, хранится отдельно от хеша
+// session_token — токен для повторной авторизации без пароля
+// token_expires — срок действия токена
 db.run(`
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         login TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
+        pepper TEXT NOT NULL,
+        session_token TEXT,
+        token_expires TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
 `, (err) => {
@@ -34,7 +42,8 @@ db.run(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         login TEXT NOT NULL,
         attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        success INTEGER DEFAULT 0
+        success INTEGER DEFAULT 0,
+        block_until TIMESTAMP
     )
 `, (err) => {
     if (err) {
@@ -43,20 +52,19 @@ db.run(`
         console.log('Таблица login_attempts готова');
     }
 });
+// Хранилище неудачных попыток в памяти
 const failedAttempts = {};
 function loadCommonPasswords() {
     try {
         const data = fs.readFileSync('common_passwords.txt', 'utf8');
-        return data.split('\n').map(p => p.trim().toLowerCase()).filter(p => p.length > 0);
+        const list = data.split('\n')
+            .map(p => p.trim().toLowerCase())
+            .filter(p => p.length > 0);
+        console.log('Загружено частых паролей: ' + list.length);
+        return list;
     } catch (err) {
-        return [
-            '12345678', 'password', '123456789', 'qwerty123', 'qwertyui',
-            'password1', '1234567890', 'qwerty', 'abc123456', 'admin123',
-            '11111111', '22222222', '33333333', '44444444', '55555555',
-            '1234567', 'admin', 'password123', 'qwerty123456', 'letmein',
-            'welcome1', 'monkey', 'dragon', 'master', 'sunshine',
-            'princess', 'iloveyou', 'football', '123123123', 'qazwsx'
-        ];
+        console.warn('Файл common_passwords.txt не найден — проверка на частые пароли отключена');
+        return [];
     }
 }
 const commonPasswords = loadCommonPasswords();
@@ -64,50 +72,139 @@ function validatePassword(password) {
     if (password.length < 8) {
         return { valid: false, message: 'Пароль должен содержать минимум 8 символов' };
     }
-    if (!/[A-Z]/.test(password)) {
+    if (!/\p{Lu}/u.test(password)) {
         return { valid: false, message: 'Пароль должен содержать заглавную букву' };
     }
-    if (!/[a-z]/.test(password)) {
+    if (!/\p{Ll}/u.test(password)) {
         return { valid: false, message: 'Пароль должен содержать строчную букву' };
     }
     if (!/[0-9]/.test(password)) {
         return { valid: false, message: 'Пароль должен содержать цифру' };
     }
-    if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?/\\|`~]/.test(password)) {
+    if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?/\\|`~ ]/.test(password)) {
         return { valid: false, message: 'Пароль должен содержать специальный символ (!@#$%^&* и т.д.)' };
     }
-    if (commonPasswords.includes(password.toLowerCase())) {
-        return { valid: false, message: 'Этот пароль слишком слабый, выберите другой' };
+    if (commonPasswords.length > 0) {
+        const normalized = password.toLowerCase().replace(/\s+/g, '');
+        if (commonPasswords.includes(normalized)) {
+            return { valid: false, message: 'Этот пароль слишком слабый, выберите другой' };
+        }
     }
     return { valid: true, message: '' };
 }
+// Проверка блокировки — возвращает остаток в секундах (0 = не заблокирован)
 function checkBlock(login) {
     const now = Date.now();
-    const attempts = failedAttempts[login] || [];
-    const recentAttempts = attempts.filter(time => now - time < 120000);
-    failedAttempts[login] = recentAttempts;
-    return recentAttempts.length >= 3;
-}
-function addFailedAttempt(login) {
-    if (!failedAttempts[login]) {
-        failedAttempts[login] = [];
-    }
-    failedAttempts[login].push(Date.now());
-    const now = Date.now();
-    failedAttempts[login] = failedAttempts[login].filter(time => now - time < 120000);
-}
-function getBlockTimeRemaining(login) {
-    const attempts = failedAttempts[login] || [];
-    if (attempts.length < 3) {
+    const record = failedAttempts[login];
+    if (!record) {
         return 0;
     }
-    const oldestAttempt = attempts[0];
-    const timePassed = Date.now() - oldestAttempt;
-    const remaining = 120000 - timePassed;
-    return Math.max(0, remaining);
+    if (record.blockUntil && now < record.blockUntil) {
+        return Math.ceil((record.blockUntil - now) / 1000);
+    }
+    if (record.blockUntil && now >= record.blockUntil) {
+        delete failedAttempts[login];
+        return 0;
+    }
+    return 0;
 }
+// Добавление неудачной попытки + ступенчатая блокировка:
+// 1-я попытка  10 секунд
+// 2-я попытка  30 секунд
+// 3-я попытка  5 минут
+// 4-я и далее  удвоение предыдущего времени (максимум 1 час)
+function addFailedAttempt(login) {
+    const now = Date.now();
+    if (!failedAttempts[login]) {
+        failedAttempts[login] = { count: 0, lastAttempt: now, blockUntil: 0, lastBlockDuration: 0 };
+    }
+    const record = failedAttempts[login];
+    if (now - record.lastAttempt > 300000) {
+        record.count = 0;
+    }
+    record.count += 1;
+    record.lastAttempt = now;
+    let blockDuration = 0;
+    switch (record.count) {
+        case 1: blockDuration = 10 * 1000; break;
+        case 2: blockDuration = 30 * 1000; break;
+        case 3: blockDuration = 5 * 60 * 1000; break;
+        default:
+            blockDuration = Math.min(
+                (record.lastBlockDuration || 5 * 60 * 1000) * 2,
+                60 * 60 * 1000
+            );
+    }
+    record.blockUntil = now + blockDuration;
+    record.lastBlockDuration = blockDuration;
+}
+function getBlockTimeRemaining(login) {
+    return checkBlock(login) * 1000;
+}
+// Генерация серверной соли (pepper)
+function generatePepper() {
+    return crypto.randomBytes(32).toString('hex');
+}
+// Генерация токена сессии
+function generateSessionToken() {
+    return crypto.randomBytes(64).toString('hex');
+}
+// Хеширование пароля через argon2id с pepper
+async function hashPassword(password, pepper) {
+    return await argon2.hash(password + pepper, {
+        type: argon2.argon2id,
+        memoryCost: 19456,
+        timeCost: 2,
+        parallelism: 1,
+    });
+}
+// Проверка пароля через argon2 + pepper
+async function verifyPassword(hash, password, pepper) {
+    return await argon2.verify(hash, password + pepper);
+}
+// Проверка токена в заголовке Authorization
+function authMiddleware(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ success: false, message: 'Требуется авторизация' });
+    }
+    const token = authHeader.slice(7);
+    db.get(
+        'SELECT id, login, token_expires FROM users WHERE session_token = ?',
+        [token],
+        (err, row) => {
+            if (err) {
+                return res.status(500).json({ success: false, message: 'Ошибка базы данных' });
+            }
+            if (!row) {
+                return res.status(401).json({ success: false, message: 'Неверный токен' });
+            }
+            if (row.token_expires && new Date(row.token_expires) < new Date()) {
+                return res.status(401).json({ success: false, message: 'Токен истёк' });
+            }
+            req.user = { id: row.id, login: row.login };
+            next();
+        }
+    );
+}
+// Проверка: свободен ли логин
+app.post('/check-login', (req, res) => {
+    const { login } = req.body;
+    if (!login) {
+        return res.json({ success: false, message: 'Логин не указан' });
+    }
+    db.get('SELECT id FROM users WHERE login = ?', [login], (err, row) => {
+        if (err) {
+            return res.json({ success: false, message: 'Ошибка базы данных' });
+        }
+        if (row) {
+            return res.json({ success: true, available: false, message: 'Логин занят' });
+        }
+        res.json({ success: true, available: true, message: 'Логин свободен' });
+    });
+});
 app.post('/register', async (req, res) => {
-    const { login, password } = req.body;   
+    const { login, password } = req.body;
     if (!login || !password) {
         return res.json({ success: false, message: 'Заполните все поля' });
     }
@@ -117,7 +214,7 @@ app.post('/register', async (req, res) => {
     db.get('SELECT id FROM users WHERE login = ?', [login], async (err, row) => {
         if (err) {
             return res.json({ success: false, message: 'Ошибка базы данных' });
-        }   
+        }
         if (row) {
             return res.json({ success: false, message: 'Пользователь с таким логином уже существует' });
         }
@@ -126,11 +223,11 @@ app.post('/register', async (req, res) => {
             return res.json({ success: false, message: passwordCheck.message });
         }
         try {
-            const saltRounds = 10;
-            const hashedPassword = await bcrypt.hash(password, saltRounds);   
+            const pepper = generatePepper();
+            const hashedPassword = await hashPassword(password, pepper);
             db.run(
-                'INSERT INTO users (login, password) VALUES (?, ?)',
-                [login, hashedPassword],
+                'INSERT INTO users (login, password, pepper) VALUES (?, ?, ?)',
+                [login, hashedPassword, pepper],
                 function(err) {
                     if (err) {
                         return res.json({ success: false, message: 'Ошибка при регистрации' });
@@ -144,45 +241,62 @@ app.post('/register', async (req, res) => {
     });
 });
 app.post('/login', (req, res) => {
-    const { login, password } = req.body; 
+    const { login, password } = req.body;
     if (!login || !password) {
         return res.json({ success: false, message: 'Заполните все поля' });
     }
     const blockRemaining = getBlockTimeRemaining(login);
     if (blockRemaining > 0) {
         const seconds = Math.ceil(blockRemaining / 1000);
-        return res.json({ 
-            success: false, 
-            message: 'Слишком много неудачных попыток. Подождите ' + seconds + ' секунд' 
+        return res.json({
+            success: false,
+            message: 'Слишком много неудачных попыток. Подождите ' + seconds + ' секунд'
         });
-    } 
-    db.get('SELECT id, password FROM users WHERE login = ?', [login], async (err, row) => {
+    }
+    db.get('SELECT id, password, pepper FROM users WHERE login = ?', [login], async (err, row) => {
         if (err) {
             return res.json({ success: false, message: 'Ошибка базы данных' });
-        } 
+        }
         if (!row) {
             addFailedAttempt(login);
-            return res.json({ success: false, message: 'Такого аккаунта не существует' });
-        } 
+            return res.json({ success: false, message: 'Неверный логин или пароль' });
+        }
         try {
-            const match = await bcrypt.compare(password, row.password); 
+            const match = await verifyPassword(row.password, password, row.pepper);
             if (match) {
-                failedAttempts[login] = [];
-                res.json({ success: true, message: 'Вход выполнен' });
+                const token = generateSessionToken();
+                const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                db.run(
+                    'UPDATE users SET session_token = ?, token_expires = ? WHERE id = ?',
+                    [token, expires, row.id],
+                    (err) => {
+                        if (err) {
+                            return res.json({ success: false, message: 'Ошибка сохранения токена' });
+                        }
+                        failedAttempts[login] = null;
+                        res.json({
+                            success: true,
+                            message: 'Вход выполнен',
+                            token: token,
+                            login: login
+                        });
+                    }
+                );
             } else {
                 addFailedAttempt(login);
-                const remaining = getBlockTimeRemaining(login);
-                if (remaining > 0) {
-                    const seconds = Math.ceil(remaining / 1000);
-                    res.json({ 
-                        success: false, 
-                        message: 'Неверный пароль. Осталось попыток: ' + (3 - (failedAttempts[login] || []).length) + '. Блокировка через ' + seconds + 'с' 
+                const blockRemaining = getBlockTimeRemaining(login);
+                const record = failedAttempts[login] || {};
+                const attemptsCount = record.count || 0;
+                if (blockRemaining > 0) {
+                    const seconds = Math.ceil(blockRemaining / 1000);
+                    res.json({
+                        success: false,
+                        message: 'Неверный пароль. Попытка ' + attemptsCount + '. Блокировка на ' + seconds + ' секунд'
                     });
                 } else {
-                    const attemptsLeft = 3 - (failedAttempts[login] || []).length;
-                    res.json({ 
-                        success: false, 
-                        message: 'Неверный пароль. Осталось попыток: ' + attemptsLeft 
+                    res.json({
+                        success: false,
+                        message: 'Неверный пароль. Попытка ' + attemptsCount
                     });
                 }
             }
@@ -191,9 +305,31 @@ app.post('/login', (req, res) => {
         }
     });
 });
+// Проверка текущего токена
+app.get('/me', authMiddleware, (req, res) => {
+    res.json({
+        success: true,
+        login: req.user.login
+    });
+});
+// Выход — удаляем токен из БД
+app.post('/logout', authMiddleware, (req, res) => {
+    db.run(
+        'UPDATE users SET session_token = NULL, token_expires = NULL WHERE id = ?',
+        [req.user.id],
+        (err) => {
+            if (err) {
+                return res.json({ success: false, message: 'Ошибка выхода' });
+            }
+            res.json({ success: true, message: 'Выход выполнен' });
+        }
+    );
+});
 const PORT = 3000;
 app.listen(PORT, () => {
     console.log('Сервер запущен на порту 3000');
     console.log('http://localhost:3000');
-    console.log('Блокировка после 3 неудачных попыток на 2 минуты');
+    console.log('Ступенчатая блокировка: 1 раз  10 сек, 2 раза  30 сек, 3 раза  5 мин, далее удвоение');
+    console.log('Хеширование: argon2id + серверный pepper');
+    console.log('Авторизация: по токену в заголовке Authorization');
 });

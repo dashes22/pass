@@ -8,6 +8,7 @@
 <body>
     <div class="card">
         <h2>Аккаунт</h2>
+
         <form id="authForm">
             <div class="field">
                 <label for="loginInput">Логин</label>
@@ -27,9 +28,19 @@
                     autocomplete="current-password"
                 />
                 <div class="password-hint">
-                    минимум 8 символов, заглавная буква, строчная буква, цифра, специальный символ (!@#$%^&*)
+                    минимум 8 символов, заглавная буква, строчная буква, цифра, специальный символ (!@#$%^&*).
+                    Можно использовать русские буквы и пробелы.
                 </div>
             </div>  
+            <div class="field" id="confirmPasswordField" style="display: none;">
+                <label for="confirmPasswordInput">Повторите пароль</label>
+                <input 
+                    type="password" 
+                    id="confirmPasswordInput" 
+                    placeholder="повторите пароль" 
+                    autocomplete="new-password"
+                />
+            </div>
             <div class="actions">
                 <button type="button" class="btn btn-secondary" id="registerBtn">
                     Зарегистрироваться
@@ -40,6 +51,11 @@
             </div>
             <div id="statusMessage" class="status-msg"></div>
         </form>
+
+        <div id="loggedInBlock" class="logged-in-block" style="display: none;">
+            <p>Вы вошли как: <strong id="currentLogin"></strong></p>
+            <button type="button" class="btn btn-secondary" id="logoutBtn">Выйти</button>
+        </div>
     </div>
     <script src="script.js"></script>
 </body>
