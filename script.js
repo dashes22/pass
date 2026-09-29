@@ -6,9 +6,6 @@
     const registerBtn = document.getElementById('registerBtn');
     const loginBtn = document.getElementById('loginBtn');
     const statusMsg = document.getElementById('statusMessage');
-    const loggedInBlock = document.getElementById('loggedInBlock');
-    const currentLogin = document.getElementById('currentLogin');
-    const logoutBtn = document.getElementById('logoutBtn');
     let statusTimeout = null;
     function setStatus(text, isError) {
         if (statusTimeout) {
@@ -23,17 +20,6 @@
             statusTimeout = null;
         }, 4000);
     }
-    function showLoggedIn(login) {
-        if (loggedInBlock && currentLogin) {
-            loggedInBlock.style.display = 'block';
-            currentLogin.textContent = login;
-        }
-    }
-    function hideLoggedIn() {
-        if (loggedInBlock) {
-            loggedInBlock.style.display = 'none';
-        }
-    }
     function showConfirmPasswordField() {
         if (confirmPasswordField) {
             confirmPasswordField.style.display = 'block';
@@ -47,7 +33,6 @@
             confirmPasswordInput.value = '';
         }
     }
-    // Проверяет, свободен ли логин — запрос на /check-login
     async function checkLoginAvailable(login) {
         try {
             const response = await fetch('http://localhost:3000/check-login', {
@@ -79,11 +64,6 @@
                 if (action === 'register') {
                     hideConfirmPasswordField();
                 }
-                if (action === 'login' && data.token) {
-                    localStorage.setItem('token', data.token);
-                    localStorage.setItem('login', data.login || login);
-                    showLoggedIn(data.login || login);
-                }
             }
         } catch (error) {
             setStatus('Ошибка соединения с сервером', true);
@@ -100,7 +80,6 @@
         hideConfirmPasswordField();
         sendRequest('login', login, password);
     }
-    // Теперь сначала проверяем логин на сервере, и только если свободен — просим повтор
     async function handleRegister() {
         const login = loginInput.value.trim();
         const password = passwordInput.value.trim();
@@ -112,18 +91,16 @@
             setStatus('Логин должен содержать минимум 3 символа', true);
             return;
         }
-        // Если поле повтора ещё скрыто — сначала проверяем логин на сервере
         if (confirmPasswordField && confirmPasswordField.style.display === 'none') {
             const available = await checkLoginAvailable(login);
             if (!available) {
                 setStatus('Пользователь с таким логином уже существует', true);
-                return;  // не показываем поле повтора
+                return;
             }
             showConfirmPasswordField();
             setStatus('Логин свободен. Повторите пароль для подтверждения', false);
             return;
         }
-        // Поле повтора открыто — сверяем пароли
         const confirmPassword = confirmPasswordInput ? confirmPasswordInput.value.trim() : '';
         if (password !== confirmPassword) {
             setStatus('Пароли не совпадают', true);
@@ -133,49 +110,6 @@
     }
     loginBtn.addEventListener('click', handleLogin);
     registerBtn.addEventListener('click', handleRegister);
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', handleLogout);
-    }
-    async function handleLogout() {
-        const token = localStorage.getItem('token');
-        try {
-            if (token) {
-                await fetch('http://localhost:3000/logout', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Bearer ' + token
-                    }
-                });
-            }
-        } catch (error) {
-            console.error(error);
-        }
-        localStorage.removeItem('token');
-        localStorage.removeItem('login');
-        hideLoggedIn();
-        setStatus('Выход выполнен', false);
-    }
-    async function checkAuthOnLoad() {
-        const token = localStorage.getItem('token');
-        if (!token) return;
-        try {
-            const response = await fetch('http://localhost:3000/me', {
-                headers: {
-                    'Authorization': 'Bearer ' + token
-                }
-            });
-            const data = await response.json();
-            if (data.success) {
-                showLoggedIn(data.login);
-            } else {
-                localStorage.removeItem('token');
-                localStorage.removeItem('login');
-                hideLoggedIn();
-            }
-        } catch (error) {
-            console.error(error);
-        }
-    }
     function onEnter(e) {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -192,7 +126,6 @@
             }
         });
     }
-    // Если пользователь меняет логин — сбрасываем поле повтора
     loginInput.addEventListener('input', function() {
         if (confirmPasswordField && confirmPasswordField.style.display !== 'none') {
             hideConfirmPasswordField();
@@ -206,5 +139,4 @@
         statusMsg.textContent = '';
         statusMsg.style.color = '#2a7de1';
     });
-    checkAuthOnLoad();
 })();
