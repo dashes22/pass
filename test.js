@@ -1,82 +1,10 @@
+const { checkBlock, addFailedAttempt, getBlockTimeRemaining, failedAttempts } = require('./src/block');
+const { validatePassword, validateLogin } = require('./src/validate');
 const { test, run } = require('node:test');
 const assert = require('node:assert');
-const commonPassword = require('@vks-dev/common-password');
+const commonPassword = require('common-password');
 
-// ============ ЛОГИКА (копия из server.js) ============
-async function validatePassword(password) {
-    if (password.length < 8) {
-        return { valid: false, message: 'Пароль должен содержать минимум 8 символов' };
-    }
-    if (!/\p{Lu}/u.test(password)) {
-        return { valid: false, message: 'Пароль должен содержать заглавную букву' };
-    }
-    if (!/\p{Ll}/u.test(password)) {
-        return { valid: false, message: 'Пароль должен содержать строчную букву' };
-    }
-    if (!/[0-9]/.test(password)) {
-        return { valid: false, message: 'Пароль должен содержать цифру' };
-    }
-    if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?/\\|`~ ]/.test(password)) {
-        return { valid: false, message: 'Пароль должен содержать специальный символ' };
-    }
-    if (commonPassword(password)) {
-        return { valid: false, message: 'Этот пароль слишком слабый, выберите другой' };
-    }
-    return { valid: true, message: '' };
-}
-
-function validateLogin(login) {
-    if (!login || login.trim().length === 0) {
-        return { valid: false, message: 'Логин не указан' };
-    }
-    if (login.length < 3) {
-        return { valid: false, message: 'Логин должен содержать минимум 3 символа' };
-    }
-    return { valid: true, message: '' };
-}
-
-const failedAttempts = {};
-
-function checkBlock(login) {
-    const now = Date.now();
-    const record = failedAttempts[login];
-    if (!record) return 0;
-    if (record.blockUntil && now < record.blockUntil) {
-        return Math.ceil((record.blockUntil - now) / 1000);
-    }
-    if (record.blockUntil && now >= record.blockUntil) {
-        delete failedAttempts[login];
-        return 0;
-    }
-    return 0;
-}
-
-function addFailedAttempt(login) {
-    const now = Date.now();
-    if (!failedAttempts[login]) {
-        failedAttempts[login] = { count: 0, lastAttempt: now, blockUntil: 0, lastBlockDuration: 0 };
-    }
-    const record = failedAttempts[login];
-    if (now - record.lastAttempt > 300000) record.count = 0;
-    record.count += 1;
-    record.lastAttempt = now;
-    let blockDuration = 0;
-    switch (record.count) {
-        case 1: blockDuration = 10 * 1000; break;
-        case 2: blockDuration = 30 * 1000; break;
-        case 3: blockDuration = 5 * 60 * 1000; break;
-        default:
-            blockDuration = Math.min((record.lastBlockDuration || 5 * 60 * 1000) * 2, 60 * 60 * 1000);
-    }
-    record.blockUntil = now + blockDuration;
-    record.lastBlockDuration = blockDuration;
-}
-
-function getBlockTimeRemaining(login) {
-    return checkBlock(login) * 1000;
-}
-
-// ============ ТЕСТЫ ПАРОЛЯ ============
+//ТЕСТЫ ПАРОЛЯ 
 test('пароль короче 8 символов отклонён', async () => {
     const r = await validatePassword('Ab1@');
     assert.strictEqual(r.valid, false);
