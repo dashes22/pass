@@ -1,11 +1,16 @@
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const routes = require('./src/routes');
+
 const app = express();
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use(cookieParser()); 
 app.use(express.static(__dirname));
 app.use('/', routes);
+
 const PORT = 3000;
 app.listen(PORT, () => {
     console.log('Сервер запущен на порту 3000');
