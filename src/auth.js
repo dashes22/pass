@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const { validatePassword, validateLogin } = require('./validate');
 const { checkBlock, addFailedAttempt, getBlockTimeRemaining, resetAttempts, failedAttempts } = require('./block');
 const { generatePepper, hashPassword, verifyPassword } = require('./crypto');
-const { JWT_SECRET } = require('./middleware'); // <-- Импортируем секрет из middleware
+const { JWT_SECRET } = require('./middleware'); // Убедитесь, что JWT_SECRET экспортируется из middleware.js
 
 async function registerUser(login, password) {
     if (!login || !password) return { success: false, message: 'Заполните все поля' };
@@ -43,6 +43,7 @@ async function loginUser(login, password) {
     }
 
     return new Promise((resolve) => {
+        // Добавил выборку id, чтобы использовать его в токенах и сессиях
         db.get('SELECT id, password, pepper FROM users WHERE login = ?', [login], async (err, row) => {
             if (err) return resolve({ success: false, message: 'Ошибка базы данных' });
             if (!row) {
@@ -54,11 +55,12 @@ async function loginUser(login, password) {
                 if (match) {
                     resetAttempts(login);
                     
-                    // Генерация токенов и создание сессии
+                    // --- НАЧАЛО БЛОКА СЕССИЙ И ТОКЕНОВ ---
                     const refreshToken = crypto.randomBytes(32).toString('hex');
                     const refreshHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-                    const expiresAt = Math.floor(Date.now() / 1000) + (2 * 24 * 60 * 60); // 2 дня
+                    const expiresAt = Math.floor(Date.now() / 1000) + (2 * 24 * 60 * 60); // 2 дня (в секундах)
 
+                    // Сохраняем сессию в БД
                     db.run(
                         'INSERT INTO sessions (user_id, refresh_hash, expires_at) VALUES (?, ?, ?)',
                         [row.id, refreshHash, expiresAt],
@@ -73,10 +75,11 @@ async function loginUser(login, password) {
                                 message: 'Вход выполнен',
                                 login: login,
                                 accessToken: accessToken,
-                                refreshToken: refreshToken // Отдаем роуту, чтобы он положил его в cookie
+                                refreshToken: refreshToken // Роут положит его в httpOnly cookie
                             });
                         }
                     );
+                    // --- КОНЕЦ БЛОКА ---
                 } else {
                     addFailedAttempt(login);
                     const blockRemaining = getBlockTimeRemaining(login);
